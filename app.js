@@ -3,7 +3,7 @@
 // ─── Data Source URLs ─────────────────────────────────────────────────────────
 const STATES_TOPO_URL  = 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
 const LEGISLATORS_URL  = 'https://unitedstates.github.io/congress-legislators/legislators-current.json';
-const TIGER_BASE       = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Legislative/MapServer/54/query';
+const TIGER_BASE       = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Legislative/MapServer/0/query';
 const CENSUS_GEOCODE   = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress';
 const NOMINATIM_URL    = 'https://nominatim.openstreetmap.org/search';
 
@@ -159,8 +159,8 @@ function onStateMove(event) {
 // ─── Fetch Districts from Census TIGER API ────────────────────────────────────
 async function fetchDistricts(fips) {
   const params = new URLSearchParams({
-    where:             `STATEFP='${fips}'`,
-    outFields:         'STATEFP,CD118FP,NAMELSAD',
+    where:             `STATE='${fips}'`,
+    outFields:         'STATE,CD119,NAME',
     outSR:             '4326',
     f:                 'geojson',
     resultRecordCount: '100',
@@ -184,7 +184,7 @@ function renderDistricts(geojson, stateFips) {
     .data(geojson.features)
     .join('path')
       .attr('class', d => {
-        const leg = getLegislator(stateAbbr, d.properties.CD118FP);
+        const leg = getLegislator(stateAbbr, d.properties.CD119);
         return 'district' + (leg && pledgeSet.has(leg.id.bioguide) ? ' signed' : '');
       })
       .attr('d', pathGen)
@@ -208,14 +208,14 @@ function onDistrictClick(event, d, stateFips) {
   d3.select(event.currentTarget).classed('selected', true);
 
   const stateAbbr  = FIPS_TO_STATE[stateFips] || '';
-  const districtFp = d.properties.CD118FP;
+  const districtFp = d.properties.CD119;
   const leg        = getLegislator(stateAbbr, districtFp);
 
   showPanel(leg, d.properties, stateAbbr, districtFp);
 }
 
 function onDistrictHover(event, d, stateAbbr) {
-  const districtFp  = d.properties.CD118FP;
+  const districtFp  = d.properties.CD119;
   const leg         = getLegislator(stateAbbr, districtFp);
   const districtNum = parseInt(districtFp, 10);
   const label       = districtNum === 0
@@ -241,7 +241,7 @@ function showPanel(leg, props, stateAbbr, districtFp) {
 
   if (!leg) {
     content.innerHTML = `
-      <p class="panel-district">${props.NAMELSAD || districtLabel}</p>
+      <p class="panel-district">${props.NAME || districtLabel}</p>
       <p class="no-rep">No representative data available for this district.</p>
     `;
   } else {
@@ -318,7 +318,7 @@ async function onSearch() {
 
     // Highlight the matched district
     const target = districtGroup.selectAll('.district')
-      .filter(d => d.properties.CD118FP === districtFp);
+      .filter(d => d.properties.CD119 === districtFp);
 
     if (!target.empty()) {
       districtGroup.selectAll('.district').classed('selected', false);
@@ -326,7 +326,7 @@ async function onSearch() {
 
       const stateAbbr = FIPS_TO_STATE[fips] || '';
       const leg = getLegislator(stateAbbr, districtFp);
-      showPanel(leg, { NAMELSAD: '' }, stateAbbr, districtFp);
+      showPanel(leg, { NAME: '' }, stateAbbr, districtFp);
     }
   } catch (err) {
     console.error('Search error:', err);
@@ -340,7 +340,7 @@ async function onSearch() {
 async function geocode(query) {
   // 1. Census geocoder
   try {
-    const params = new URLSearchParams({ address: query, benchmark: '2020', format: 'json' });
+    const params = new URLSearchParams({ address: query, benchmark: 'Public_AR_Current', format: 'json' });
     const res    = await fetch(`${CENSUS_GEOCODE}?${params}`);
     const data   = await res.json();
     const match  = data.result?.addressMatches?.[0];
@@ -368,7 +368,7 @@ async function findDistrictAtPoint(lat, lon) {
     geometryType: 'esriGeometryPoint',
     inSR:         '4326',
     spatialRel:   'esriSpatialRelIntersects',
-    outFields:    'STATEFP,CD118FP',
+    outFields:    'STATE,CD119',
     outSR:        '4326',
     f:            'geojson',
   });
@@ -381,9 +381,9 @@ async function findDistrictAtPoint(lat, lon) {
 
   // GeoJSON puts attributes under .properties
   const props = feat.properties || feat.attributes || {};
-  if (!props.STATEFP || props.CD118FP == null) return null;
+  if (!props.STATE || props.CD119 == null) return null;
 
-  return { fips: String(props.STATEFP).padStart(2, '0'), districtFp: String(props.CD118FP).padStart(2, '0') };
+  return { fips: String(props.STATE).padStart(2, '0'), districtFp: String(props.CD119).padStart(2, '0') };
 }
 
 // ─── Zoom Helpers ─────────────────────────────────────────────────────────────
@@ -413,7 +413,7 @@ function fipsOf(feature) {
 }
 
 /**
- * Look up a legislator by state abbreviation + TIGER CD118FP string.
+ * Look up a legislator by state abbreviation + TIGER CD119 string.
  * Handles at-large districts where TIGER uses "00" and legislators use 0 (or 1).
  */
 function getLegislator(stateAbbr, cdFp) {
