@@ -156,22 +156,86 @@ function onStateMove(event) {
   moveTooltip(event);
 }
 
-// ─── Fetch Districts from Census TIGER API ────────────────────────────────────
+// ─── District cache (avoids re-fetching on repeat visits) ────────────────────
+const districtCache = new Map();
+
+// ─── Fetch Districts from Census TIGER API ───────────────────────────────────
 async function fetchDistricts(fips) {
-  const params = new URLSearchParams({
-    where:             `STATE='${fips}'`,
-    outFields:         'STATE,CD119,NAME',
-    outSR:             '4326',
-    f:                 'geojson',
-    resultRecordCount: '100',
-  });
+  if (districtCache.has(fips)) return districtCache.get(fips);
 
-  const res = await fetch(`${TIGER_BASE}?${params}`);
-  if (!res.ok) throw new Error(`TIGER API ${res.status}`);
-  const data = await res.json();
+  const allFeatures = [];
+  let offset = 0;
 
-  if (!data.features?.length) throw new Error('No district features returned');
-  return data;
+  while (true) {
+    const params = new URLSearchParams({
+      where:             `STATE='${fips}'`,
+      outFields:         'STATE,CD119,NAME',
+      outSR:             '4326',
+      f:                 'geojson',
+      resultRecordCount: '1000',
+      resultOffset:      String(offset),
+    });
+
+    const res  = await fetch(`${TIGER_BASE}?${params}`);
+    if (!res.ok) throw new Error(`TIGER API ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || 'TIGER API error');
+    if (!data.features?.length) break;
+
+    allFeatures.push(...data.features);
+    if (!data.exceededTransferLimit) break;   // server has no more pages
+    offset += data.features.length;
+  }
+
+  if (!allFeatures.length) throw new Error('No congressional districts found for this state');
+  // TIGER returns clockwise exterior rings; rewind to CCW (RFC 7946) so D3
+  // renders each district's interior instead of the complement (entire map).
+  const result = rewindGeoJSON({ type: 'FeatureCollection', features: allFeatures });
+  districtCache.set(fips, result);
+  return result;
+}
+
+/** Rewind GeoJSON ring coordinates to RFC 7946 winding: exterior rings CCW,
+ *  holes CW.  D3's geoPath expects this convention to fill interiors. */
+function rewindGeoJSON(collection) {
+  function signedArea(ring) {
+    let a = 0;
+    for (let i = 0, n = ring.length; i < n; i++) {
+      const [x0, y0] = ring[i], [x1, y1] = ring[(i + 1) % n];
+      a += x0 * y1 - x1 * y0;
+    }
+    return a;
+  }
+  function maybeReverse(ring, exterior) {
+    // exterior should be CCW (positive area); holes should be CW (negative)
+    return (exterior ? signedArea(ring) < 0 : signedArea(ring) > 0)
+      ? ring.slice().reverse()
+      : ring;
+  }
+  return {
+    ...collection,
+    features: collection.features.map(f => {
+      const geo = f.geometry;
+      if (!geo) return f;
+      if (geo.type === 'Polygon') {
+        return { ...f, geometry: { ...geo,
+          coordinates: geo.coordinates.map((r, i) => maybeReverse(r, i === 0)) } };
+      }
+      if (geo.type === 'MultiPolygon') {
+        return { ...f, geometry: { ...geo,
+          coordinates: geo.coordinates.map(poly =>
+            poly.map((r, i) => maybeReverse(r, i === 0))) } };
+      }
+      return f;
+    }),
+  };
+}
+
+/** Extract the congressional district code from a TIGER feature's properties,
+ *  handling both the CD119 and CD119FP field name variants. */
+function cdField(props) {
+  const raw = props.CD119 ?? props.CD119FP;
+  return raw != null ? String(raw).padStart(2, '0') : null;
 }
 
 // ─── Render District Layer ────────────────────────────────────────────────────
@@ -184,7 +248,7 @@ function renderDistricts(geojson, stateFips) {
     .data(geojson.features)
     .join('path')
       .attr('class', d => {
-        const leg = getLegislator(stateAbbr, d.properties.CD119);
+        const leg = getLegislator(stateAbbr, cdField(d.properties));
         return 'district' + (leg && pledgeSet.has(leg.id.bioguide) ? ' signed' : '');
       })
       .attr('d', pathGen)
@@ -208,14 +272,14 @@ function onDistrictClick(event, d, stateFips) {
   d3.select(event.currentTarget).classed('selected', true);
 
   const stateAbbr  = FIPS_TO_STATE[stateFips] || '';
-  const districtFp = d.properties.CD119;
+  const districtFp = cdField(d.properties);
   const leg        = getLegislator(stateAbbr, districtFp);
 
   showPanel(leg, d.properties, stateAbbr, districtFp);
 }
 
 function onDistrictHover(event, d, stateAbbr) {
-  const districtFp  = d.properties.CD119;
+  const districtFp  = cdField(d.properties);
   const leg         = getLegislator(stateAbbr, districtFp);
   const districtNum = parseInt(districtFp, 10);
   const label       = districtNum === 0
@@ -318,7 +382,7 @@ async function onSearch() {
 
     // Highlight the matched district
     const target = districtGroup.selectAll('.district')
-      .filter(d => d.properties.CD119 === districtFp);
+      .filter(d => cdField(d.properties) === districtFp);
 
     if (!target.empty()) {
       districtGroup.selectAll('.district').classed('selected', false);
@@ -381,9 +445,10 @@ async function findDistrictAtPoint(lat, lon) {
 
   // GeoJSON puts attributes under .properties
   const props = feat.properties || feat.attributes || {};
-  if (!props.STATE || props.CD119 == null) return null;
+  const cd = cdField(props);
+  if (!props.STATE || cd == null) return null;
 
-  return { fips: String(props.STATE).padStart(2, '0'), districtFp: String(props.CD119).padStart(2, '0') };
+  return { fips: String(props.STATE).padStart(2, '0'), districtFp: cd };
 }
 
 // ─── Zoom Helpers ─────────────────────────────────────────────────────────────
@@ -414,15 +479,21 @@ function fipsOf(feature) {
 
 /**
  * Look up a legislator by state abbreviation + TIGER CD119 string.
- * Handles at-large districts where TIGER uses "00" and legislators use 0 (or 1).
+ * Handles at-large districts: TIGER may use "00" or "98" for at-large;
+ * legislators-current.json uses district 0 (sometimes 1 for single-rep states).
  */
 function getLegislator(stateAbbr, cdFp) {
   const num = parseInt(cdFp, 10);
-  return (
-    legislatorMap[`${stateAbbr}-${num}`] ||
-    (num === 1 ? legislatorMap[`${stateAbbr}-0`] : null) ||
-    (num === 0 ? legislatorMap[`${stateAbbr}-1`] : null)
-  );
+  // Direct match first
+  if (legislatorMap[`${stateAbbr}-${num}`]) return legislatorMap[`${stateAbbr}-${num}`];
+  // At-large: TIGER "00" (0) or "98" → try district 0, then 1
+  const isAtLarge = num === 0 || num === 98;
+  if (isAtLarge) {
+    return legislatorMap[`${stateAbbr}-0`] || legislatorMap[`${stateAbbr}-1`] || null;
+  }
+  // Single-rep state stored as district 1 in legislators but 0 in TIGER
+  if (num === 1) return legislatorMap[`${stateAbbr}-0`] || null;
+  return null;
 }
 
 function partyClass(party) {
