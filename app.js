@@ -54,7 +54,8 @@ const DISTRICT_STYLE = {
   color:       '#ffffff',
   weight:       1.5,
   opacity:      0.55,
-  fill:         false,
+  fill:         true,      // must be true so the interior is a click/hover target
+  fillOpacity:  0,         // transparent — visually no fill, but fully clickable
 };
 
 let districtLayer  = null;
@@ -170,11 +171,13 @@ function showPanel(props) {
   const abbr      = FIPS_TO_STATE[fips] || fips;
   const stateName = STATE_NAMES[abbr]   || abbr;
   const distNum   = parseInt(props.CD119, 10);
-  const distLabel = distNum === 0 ? 'At-Large District' : `District ${distNum}`;
+  const shortCode = districtLabel(props);
+  const distName  = distNum === 0 ? 'At-Large District' : `District ${distNum}`;
 
   document.getElementById('panel-content').innerHTML = `
+    <p class="panel-code">${shortCode}</p>
     <p class="panel-state">${stateName}</p>
-    <h2 class="panel-district-name">${distLabel}</h2>
+    <h2 class="panel-district-name">${distName}</h2>
     <p class="panel-congress">119th Congress</p>
   `;
   document.getElementById('panel').classList.remove('hidden');
@@ -273,13 +276,14 @@ map.on('mousemove', e => {
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// Short label for tooltip: "CO-07" or "WY-AL"
 function districtLabel(props) {
-  const fips  = String(props.STATE).padStart(2, '0');
-  const abbr  = FIPS_TO_STATE[fips] || fips;
-  const num   = parseInt(props.CD119, 10);
+  const fips = String(props.STATE).padStart(2, '0');
+  const abbr = FIPS_TO_STATE[fips] || fips;
+  const num  = parseInt(props.CD119, 10);
   return num === 0
-    ? `${STATE_NAMES[abbr] || abbr} – At-Large`
-    : `${STATE_NAMES[abbr] || abbr} – District ${num}`;
+    ? `${abbr}-AL`
+    : `${abbr}-${String(num).padStart(2, '0')}`;
 }
 
 // ─── Loading / Errors ─────────────────────────────────────────────────────────
