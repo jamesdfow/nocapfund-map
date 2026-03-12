@@ -1,11 +1,9 @@
 'use strict';
 
-// ─── Data Source URLs ─────────────────────────────────────────────────────────
-const STATES_TOPO_URL  = 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
-const LEGISLATORS_URL  = 'https://unitedstates.github.io/congress-legislators/legislators-current.json';
-const TIGER_BASE       = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Legislative/MapServer/0/query';
-const CENSUS_GEOCODE   = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress';
-const NOMINATIM_URL    = 'https://nominatim.openstreetmap.org/search';
+// ─── Data Sources ─────────────────────────────────────────────────────────────
+const TIGER_QUERY    = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Legislative/MapServer/0/query';
+const CENSUS_GEOCODE = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress';
+const NOMINATIM_URL  = 'https://nominatim.openstreetmap.org/search';
 
 // ─── Lookup Tables ────────────────────────────────────────────────────────────
 const FIPS_TO_STATE = {
@@ -16,7 +14,7 @@ const FIPS_TO_STATE = {
   '32':'NV','33':'NH','34':'NJ','35':'NM','36':'NY','37':'NC','38':'ND',
   '39':'OH','40':'OK','41':'OR','42':'PA','44':'RI','45':'SC','46':'SD',
   '47':'TN','48':'TX','49':'UT','50':'VT','51':'VA','53':'WA','54':'WV',
-  '55':'WI','56':'WY','72':'PR',
+  '55':'WI','56':'WY',
 };
 
 const STATE_NAMES = {
@@ -30,325 +28,160 @@ const STATE_NAMES = {
   NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',
   PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',
   TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',
-  WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming',PR:'Puerto Rico',
+  WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming',
 };
 
-// ─── Application State ────────────────────────────────────────────────────────
-let pledgeSet       = new Set();
-let legislatorMap   = {};   // "STATE-DISTRICT" → legislator object
-let activeStateFips = null;
-let stateFeatures   = null;
-let stateGroup, districtGroup, borderGroup;
+// ─── Map Init ─────────────────────────────────────────────────────────────────
+const map = L.map('map', {
+  center:      [38, -96],
+  zoom:        4,
+  minZoom:     3,
+  maxZoom:     18,
+  zoomControl: false,
+});
 
-// ─── SVG / Projection Setup ───────────────────────────────────────────────────
-const width  = window.innerWidth;
-const height = window.innerHeight;
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+  subdomains:  'abcd',
+  maxZoom:     19,
+}).addTo(map);
 
-const svg = d3.select('#map')
-  .attr('width',  width)
-  .attr('height', height);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-const g = svg.append('g');
+// ─── District Boundary Layer ──────────────────────────────────────────────────
+// Style for ALL district boundaries — thick white outlines, no fill
+const DISTRICT_STYLE = {
+  color:       '#ffffff',
+  weight:       1.5,
+  opacity:      0.55,
+  fill:         false,
+};
 
-const projection = d3.geoAlbersUsa()
-  .scale(1300)
-  .translate([width / 2, height / 2]);
+let districtLayer  = null;
+let highlightLayer = null;
 
-const pathGen = d3.geoPath().projection(projection);
-
-const zoom = d3.zoom()
-  .scaleExtent([1, 20])
-  .on('zoom', e => g.attr('transform', e.transform));
-
-svg.call(zoom);
-
-// Tooltip
-const tooltip = document.getElementById('tooltip');
-
-// ─── Initialise ───────────────────────────────────────────────────────────────
-async function init() {
+// ─── Load All Districts on Init ───────────────────────────────────────────────
+// Fetches all 435 congressional districts from the TIGER REST API with simplified
+// geometry (maxAllowableOffset), then renders them as a Leaflet GeoJSON layer.
+// We own the rendering so we control line color, weight, opacity exactly.
+async function loadAllDistricts() {
   showLoading(true);
 
   try {
-    const [topoData, legislators, pledgeData] = await Promise.all([
-      d3.json(STATES_TOPO_URL),
-      fetch(LEGISLATORS_URL).then(r => { if (!r.ok) throw new Error('legislators'); return r.json(); }),
-      fetch('pledge-data.json').then(r => { if (!r.ok) throw new Error('pledge-data'); return r.json(); }),
-    ]);
+    const features = [];
+    let offset = 0;
 
-    pledgeSet = new Set(pledgeData);
+    // Paginate until we have everything (handles any server maxRecordCount cap)
+    while (true) {
+      const params = new URLSearchParams({
+        where:               '1=1',
+        outFields:           'STATE,CD119',
+        returnGeometry:      'true',
+        outSR:               '4326',
+        f:                   'geojson',
+        resultRecordCount:   '500',
+        resultOffset:        String(offset),
+        maxAllowableOffset:  '0.01',   // simplify geometry → smaller payload, fast render
+      });
 
-    // Build lookup: "CA-6" → legislator
-    legislators.forEach(leg => {
-      const term = leg.terms.at(-1);
-      if (term.type === 'rep' || term.type === 'del') {
-        legislatorMap[`${term.state}-${term.district}`] = Object.assign({}, leg, { currentTerm: term });
-      }
-    });
+      const res  = await fetch(`${TIGER_QUERY}?${params}`);
+      if (!res.ok) throw new Error(`TIGER ${res.status}`);
+      const data = await res.json();
 
-    renderStates(topoData);
-  } catch (err) {
-    console.error('Init failed:', err);
-    showError('Failed to load map data. Please refresh.');
-  } finally {
-    showLoading(false);
-  }
-}
+      if (!data.features?.length) break;
+      features.push(...data.features);
 
-// ─── Render State Layer ───────────────────────────────────────────────────────
-function renderStates(topoData) {
-  stateGroup    = g.append('g').attr('id', 'states-layer');
-  districtGroup = g.append('g').attr('id', 'districts-layer');
-  borderGroup   = g.append('g').attr('id', 'borders-layer');
-
-  stateFeatures = topojson.feature(topoData, topoData.objects.states);
-
-  stateGroup.selectAll('.state')
-    .data(stateFeatures.features)
-    .join('path')
-      .attr('class', 'state')
-      .attr('d', pathGen)
-      .attr('data-fips', d => fipsOf(d))
-      .on('click',     onStateClick)
-      .on('mouseover', onStateHover)
-      .on('mousemove', onStateMove)
-      .on('mouseout',  hideTooltip);
-
-  // State mesh borders (drawn on top so they stay crisp)
-  borderGroup.append('path')
-    .datum(topojson.mesh(topoData, topoData.objects.states, (a, b) => a !== b))
-    .attr('class', 'state-borders')
-    .attr('d', pathGen);
-}
-
-// ─── State Interaction ────────────────────────────────────────────────────────
-async function onStateClick(event, d) {
-  event.stopPropagation();
-  hideTooltip();
-
-  const fips = fipsOf(d);
-  if (activeStateFips === fips) return;   // already loaded
-  activeStateFips = fips;
-
-  zoomToFeature(d);
-  document.getElementById('back-btn').classList.remove('hidden');
-  hidePanel();
-  clearDistricts();
-
-  showLoading(true);
-  try {
-    const geojson = await fetchDistricts(fips);
-    renderDistricts(geojson, fips);
-  } catch (err) {
-    console.error('District load error:', err);
-    showError('Could not load district boundaries. Please try again.');
-  } finally {
-    showLoading(false);
-  }
-}
-
-function onStateHover(event, d) {
-  const abbr = FIPS_TO_STATE[fipsOf(d)] || '';
-  showTooltip(event, STATE_NAMES[abbr] || abbr);
-}
-
-function onStateMove(event) {
-  moveTooltip(event);
-}
-
-// ─── District cache (avoids re-fetching on repeat visits) ────────────────────
-const districtCache = new Map();
-
-// ─── Fetch Districts from Census TIGER API ───────────────────────────────────
-async function fetchDistricts(fips) {
-  if (districtCache.has(fips)) return districtCache.get(fips);
-
-  const allFeatures = [];
-  let offset = 0;
-
-  while (true) {
-    const params = new URLSearchParams({
-      where:             `STATE='${fips}'`,
-      outFields:         'STATE,CD119,NAME',
-      outSR:             '4326',
-      f:                 'geojson',
-      resultRecordCount: '1000',
-      resultOffset:      String(offset),
-    });
-
-    const res  = await fetch(`${TIGER_BASE}?${params}`);
-    if (!res.ok) throw new Error(`TIGER API ${res.status}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error.message || 'TIGER API error');
-    if (!data.features?.length) break;
-
-    allFeatures.push(...data.features);
-    if (!data.exceededTransferLimit) break;   // server has no more pages
-    offset += data.features.length;
-  }
-
-  if (!allFeatures.length) throw new Error('No congressional districts found for this state');
-  // TIGER returns clockwise exterior rings; rewind to CCW (RFC 7946) so D3
-  // renders each district's interior instead of the complement (entire map).
-  const result = rewindGeoJSON({ type: 'FeatureCollection', features: allFeatures });
-  districtCache.set(fips, result);
-  return result;
-}
-
-/** Rewind GeoJSON ring coordinates to RFC 7946 winding: exterior rings CCW,
- *  holes CW.  D3's geoPath expects this convention to fill interiors. */
-function rewindGeoJSON(collection) {
-  function signedArea(ring) {
-    let a = 0;
-    for (let i = 0, n = ring.length; i < n; i++) {
-      const [x0, y0] = ring[i], [x1, y1] = ring[(i + 1) % n];
-      a += x0 * y1 - x1 * y0;
+      if (!data.exceededTransferLimit) break;
+      offset += data.features.length;
     }
-    return a;
-  }
-  function maybeReverse(ring, exterior) {
-    // exterior should be CCW (positive area); holes should be CW (negative)
-    return (exterior ? signedArea(ring) < 0 : signedArea(ring) > 0)
-      ? ring.slice().reverse()
-      : ring;
-  }
-  return {
-    ...collection,
-    features: collection.features.map(f => {
-      const geo = f.geometry;
-      if (!geo) return f;
-      if (geo.type === 'Polygon') {
-        return { ...f, geometry: { ...geo,
-          coordinates: geo.coordinates.map((r, i) => maybeReverse(r, i === 0)) } };
+
+    if (!features.length) throw new Error('No district features returned');
+
+    districtLayer = L.geoJSON(
+      { type: 'FeatureCollection', features },
+      {
+        style:    DISTRICT_STYLE,
+        onEachFeature: (feature, layer) => {
+          layer.on({
+            click:     e => onDistrictClick(e, feature),
+            mouseover: e => onDistrictOver(e, feature),
+            mouseout:  () => {
+              if (layer !== highlightLayer) layer.setStyle(DISTRICT_STYLE);
+              hideTooltip();
+            },
+          });
+        },
       }
-      if (geo.type === 'MultiPolygon') {
-        return { ...f, geometry: { ...geo,
-          coordinates: geo.coordinates.map(poly =>
-            poly.map((r, i) => maybeReverse(r, i === 0))) } };
-      }
-      return f;
-    }),
-  };
+    ).addTo(map);
+
+  } catch (err) {
+    console.error('Failed to load district boundaries:', err);
+    showError('Could not load district boundaries. Click any area to identify a district.');
+  } finally {
+    showLoading(false);
+  }
 }
 
-/** Extract the congressional district code from a TIGER feature's properties,
- *  handling both the CD119 and CD119FP field name variants. */
-function cdField(props) {
-  const raw = props.CD119 ?? props.CD119FP;
-  return raw != null ? String(raw).padStart(2, '0') : null;
+// ─── District Hover ───────────────────────────────────────────────────────────
+function onDistrictOver(e, feature) {
+  const label = districtLabel(feature.properties);
+  showTooltip(e.originalEvent, label);
 }
 
-// ─── Render District Layer ────────────────────────────────────────────────────
-function renderDistricts(geojson, stateFips) {
-  clearDistricts();
-
-  const stateAbbr = FIPS_TO_STATE[stateFips] || '';
-
-  districtGroup.selectAll('.district')
-    .data(geojson.features)
-    .join('path')
-      .attr('class', d => {
-        const leg = getLegislator(stateAbbr, cdField(d.properties));
-        return 'district' + (leg && pledgeSet.has(leg.id.bioguide) ? ' signed' : '');
-      })
-      .attr('d', pathGen)
-      .on('click',     (e, d) => onDistrictClick(e, d, stateFips))
-      .on('mouseover', (e, d) => onDistrictHover(e, d, stateAbbr))
-      .on('mousemove', onDistrictMove)
-      .on('mouseout',  hideTooltip);
-}
-
-function clearDistricts() {
-  if (districtGroup) districtGroup.selectAll('.district').remove();
-}
-
-// ─── District Interaction ─────────────────────────────────────────────────────
-function onDistrictClick(event, d, stateFips) {
-  event.stopPropagation();
+// ─── District Click ───────────────────────────────────────────────────────────
+async function onDistrictClick(e, feature) {
+  L.DomEvent.stopPropagation(e);
   hideTooltip();
 
-  // Highlight
-  districtGroup.selectAll('.district').classed('selected', false);
-  d3.select(event.currentTarget).classed('selected', true);
-
-  const stateAbbr  = FIPS_TO_STATE[stateFips] || '';
-  const districtFp = cdField(d.properties);
-  const leg        = getLegislator(stateAbbr, districtFp);
-
-  showPanel(leg, d.properties, stateAbbr, districtFp);
+  // If we already have the geometry, use it directly for the highlight
+  setHighlight(feature);
+  showPanel(feature.properties);
 }
 
-function onDistrictHover(event, d, stateAbbr) {
-  const districtFp  = cdField(d.properties);
-  const leg         = getLegislator(stateAbbr, districtFp);
-  const districtNum = parseInt(districtFp, 10);
-  const label       = districtNum === 0
-    ? `${stateAbbr} At-Large`
-    : `${STATE_NAMES[stateAbbr] || stateAbbr} – District ${districtNum}`;
-  const repName = leg ? (leg.name.official_full || `${leg.name.first} ${leg.name.last}`) : '';
-  showTooltip(event, label + (repName ? `\n${repName}` : ''));
+// ─── Highlight ────────────────────────────────────────────────────────────────
+function setHighlight(feature) {
+  clearHighlight();
+
+  highlightLayer = L.geoJSON(feature, {
+    style: {
+      color:       '#d29922',
+      weight:       3,
+      fillColor:   '#7d5e12',
+      fillOpacity:  0.4,
+      fill:         true,
+    },
+  }).addTo(map);
+
+  document.getElementById('clear-btn').classList.remove('hidden');
 }
 
-function onDistrictMove(event) {
-  moveTooltip(event);
-}
-
-// ─── Rep Panel ────────────────────────────────────────────────────────────────
-function showPanel(leg, props, stateAbbr, districtFp) {
-  const panel   = document.getElementById('panel');
-  const content = document.getElementById('panel-content');
-
-  const districtNum  = parseInt(districtFp, 10);
-  const districtLabel = districtNum === 0
-    ? `${STATE_NAMES[stateAbbr] || stateAbbr} – At-Large`
-    : `${STATE_NAMES[stateAbbr] || stateAbbr} – District ${districtNum}`;
-
-  if (!leg) {
-    content.innerHTML = `
-      <p class="panel-district">${props.NAME || districtLabel}</p>
-      <p class="no-rep">No representative data available for this district.</p>
-    `;
-  } else {
-    const term    = leg.currentTerm;
-    const signed  = pledgeSet.has(leg.id.bioguide);
-    const name    = leg.name.official_full || `${leg.name.first} ${leg.name.last}`;
-    const party   = term.party || 'Unknown';
-    const pClass  = partyClass(party);
-    const phone   = term.phone || '';
-    const url     = term.url || '';
-
-    content.innerHTML = `
-      <div class="${signed ? 'pledge-badge' : 'no-pledge-badge'}">
-        ${signed ? '✓ Signed No Cap Pledge' : '✗ Has Not Signed'}
-      </div>
-      <p class="panel-district">${districtLabel}</p>
-      <h2 class="rep-name">${escHtml(name)}</h2>
-      <span class="rep-party ${pClass}">${escHtml(party)}</span>
-      <hr class="panel-divider" />
-      ${phone ? `<a class="panel-action" href="tel:${escHtml(phone)}">
-        <span class="action-icon">📞</span> ${escHtml(phone)}
-      </a>` : ''}
-      ${url ? `<a class="panel-action" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">
-        <span class="action-icon">🌐</span> Official Website
-      </a>` : ''}
-    `;
+function clearHighlight() {
+  if (highlightLayer) {
+    map.removeLayer(highlightLayer);
+    highlightLayer = null;
   }
+  document.getElementById('clear-btn').classList.add('hidden');
+  hidePanel();
+}
 
-  panel.classList.remove('hidden');
+// ─── Panel ────────────────────────────────────────────────────────────────────
+function showPanel(props) {
+  const fips      = String(props.STATE).padStart(2, '0');
+  const abbr      = FIPS_TO_STATE[fips] || fips;
+  const stateName = STATE_NAMES[abbr]   || abbr;
+  const distNum   = parseInt(props.CD119, 10);
+  const distLabel = distNum === 0 ? 'At-Large District' : `District ${distNum}`;
+
+  document.getElementById('panel-content').innerHTML = `
+    <p class="panel-state">${stateName}</p>
+    <h2 class="panel-district-name">${distLabel}</h2>
+    <p class="panel-congress">119th Congress</p>
+  `;
+  document.getElementById('panel').classList.remove('hidden');
 }
 
 function hidePanel() {
   document.getElementById('panel').classList.add('hidden');
-  districtGroup?.selectAll('.district').classed('selected', false);
-}
-
-// ─── Back to Full Map ─────────────────────────────────────────────────────────
-function onBack() {
-  activeStateFips = null;
-  resetZoom();
-  clearDistricts();
-  document.getElementById('back-btn').classList.add('hidden');
-  hidePanel();
 }
 
 // ─── Search ───────────────────────────────────────────────────────────────────
@@ -359,169 +192,72 @@ async function onSearch() {
   showLoading(true);
   try {
     const coords = await geocode(query);
-    if (!coords) { showError('Address not found. Please try a zip code or full address.'); return; }
+    if (!coords) { showError('Address not found. Try a zip code or full address.'); return; }
 
-    const info = await findDistrictAtPoint(coords.lat, coords.lon);
-    if (!info) { showError('No congressional district found at that location.'); return; }
+    const feature = await queryDistrictAtPoint(coords.lat, coords.lon);
+    if (!feature) { showError('No congressional district found at that location.'); return; }
 
-    const { fips, districtFp } = info;
-    const stateFeature = stateFeatures.features.find(f => fipsOf(f) === fips);
-    if (!stateFeature) { showError('State not found in map data.'); return; }
-
-    // Load state if not already active
-    if (activeStateFips !== fips) {
-      activeStateFips = fips;
-      zoomToFeature(stateFeature);
-      document.getElementById('back-btn').classList.remove('hidden');
-      hidePanel();
-      clearDistricts();
-
-      const geojson = await fetchDistricts(fips);
-      renderDistricts(geojson, fips);
-    }
-
-    // Highlight the matched district
-    const target = districtGroup.selectAll('.district')
-      .filter(d => cdField(d.properties) === districtFp);
-
-    if (!target.empty()) {
-      districtGroup.selectAll('.district').classed('selected', false);
-      target.classed('selected', true);
-
-      const stateAbbr = FIPS_TO_STATE[fips] || '';
-      const leg = getLegislator(stateAbbr, districtFp);
-      showPanel(leg, { NAME: '' }, stateAbbr, districtFp);
-    }
+    setHighlight(feature);
+    showPanel(feature.properties);
+    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 9, padding: [40, 40] });
   } catch (err) {
-    console.error('Search error:', err);
+    console.error('Search failed:', err);
     showError('Search failed. Please try again.');
   } finally {
     showLoading(false);
   }
 }
 
+// ─── Point Query (for search — fetches full-res geometry of one district) ─────
+async function queryDistrictAtPoint(lat, lon) {
+  const params = new URLSearchParams({
+    geometry:       `${lon},${lat}`,
+    geometryType:   'esriGeometryPoint',
+    inSR:           '4326',
+    spatialRel:     'esriSpatialRelIntersects',
+    outFields:      'STATE,CD119',
+    returnGeometry: 'true',
+    outSR:          '4326',
+    f:              'geojson',
+  });
+  const res  = await fetch(`${TIGER_QUERY}?${params}`);
+  if (!res.ok) throw new Error(`TIGER ${res.status}`);
+  const data = await res.json();
+  return data.features?.[0] || null;
+}
+
 // ─── Geocoding ────────────────────────────────────────────────────────────────
 async function geocode(query) {
-  // 1. Census geocoder
   try {
-    const params = new URLSearchParams({ address: query, benchmark: 'Public_AR_Current', format: 'json' });
-    const res    = await fetch(`${CENSUS_GEOCODE}?${params}`);
-    const data   = await res.json();
-    const match  = data.result?.addressMatches?.[0];
-    if (match) return { lat: match.coordinates.y, lon: match.coordinates.x };
-  } catch (e) {
-    console.warn('Census geocoder failed:', e);
-  }
+    const p   = new URLSearchParams({ address: query, benchmark: 'Public_AR_Current', format: 'json' });
+    const res = await fetch(`${CENSUS_GEOCODE}?${p}`);
+    const d   = await res.json();
+    const m   = d.result?.addressMatches?.[0];
+    if (m) return { lat: m.coordinates.y, lon: m.coordinates.x };
+  } catch (e) { console.warn('Census geocoder failed:', e); }
 
-  // 2. Nominatim fallback
   try {
-    const params = new URLSearchParams({ q: query, format: 'json', limit: '1', countrycodes: 'us' });
-    const res    = await fetch(`${NOMINATIM_URL}?${params}`, { headers: { 'Accept-Language': 'en' } });
-    const data   = await res.json();
-    if (data.length > 0) return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-  } catch (e) {
-    console.warn('Nominatim failed:', e);
-  }
+    const p   = new URLSearchParams({ q: query, format: 'json', limit: '1', countrycodes: 'us' });
+    const res = await fetch(`${NOMINATIM_URL}?${p}`, { headers: { 'Accept-Language': 'en' } });
+    const d   = await res.json();
+    if (d.length) return { lat: parseFloat(d[0].lat), lon: parseFloat(d[0].lon) };
+  } catch (e) { console.warn('Nominatim failed:', e); }
 
   return null;
-}
-
-async function findDistrictAtPoint(lat, lon) {
-  const params = new URLSearchParams({
-    geometry:     `${lon},${lat}`,
-    geometryType: 'esriGeometryPoint',
-    inSR:         '4326',
-    spatialRel:   'esriSpatialRelIntersects',
-    outFields:    'STATE,CD119',
-    outSR:        '4326',
-    f:            'geojson',
-  });
-
-  const res  = await fetch(`${TIGER_BASE}?${params}`);
-  const data = await res.json();
-
-  const feat = data.features?.[0];
-  if (!feat) return null;
-
-  // GeoJSON puts attributes under .properties
-  const props = feat.properties || feat.attributes || {};
-  const cd = cdField(props);
-  if (!props.STATE || cd == null) return null;
-
-  return { fips: String(props.STATE).padStart(2, '0'), districtFp: cd };
-}
-
-// ─── Zoom Helpers ─────────────────────────────────────────────────────────────
-function zoomToFeature(feature) {
-  const [[x0, y0], [x1, y1]] = pathGen.bounds(feature);
-  const dx    = x1 - x0 || 1;
-  const dy    = y1 - y0 || 1;
-  const cx    = (x0 + x1) / 2;
-  const cy    = (y0 + y1) / 2;
-  const scale = Math.min(8, 0.85 / Math.max(dx / width, dy / height));
-
-  svg.transition().duration(750).call(
-    zoom.transform,
-    d3.zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-cx, -cy)
-  );
-}
-
-function resetZoom() {
-  svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
-}
-
-// ─── Utility Helpers ──────────────────────────────────────────────────────────
-
-/** Get zero-padded FIPS from a TopoJSON feature (its numeric id). */
-function fipsOf(feature) {
-  return String(feature.id).padStart(2, '0');
-}
-
-/**
- * Look up a legislator by state abbreviation + TIGER CD119 string.
- * Handles at-large districts: TIGER may use "00" or "98" for at-large;
- * legislators-current.json uses district 0 (sometimes 1 for single-rep states).
- */
-function getLegislator(stateAbbr, cdFp) {
-  const num = parseInt(cdFp, 10);
-  // Direct match first
-  if (legislatorMap[`${stateAbbr}-${num}`]) return legislatorMap[`${stateAbbr}-${num}`];
-  // At-large: TIGER "00" (0) or "98" → try district 0, then 1
-  const isAtLarge = num === 0 || num === 98;
-  if (isAtLarge) {
-    return legislatorMap[`${stateAbbr}-0`] || legislatorMap[`${stateAbbr}-1`] || null;
-  }
-  // Single-rep state stored as district 1 in legislators but 0 in TIGER
-  if (num === 1) return legislatorMap[`${stateAbbr}-0`] || null;
-  return null;
-}
-
-function partyClass(party) {
-  const p = (party || '').toLowerCase();
-  if (p.startsWith('r')) return 'republican';
-  if (p.startsWith('d')) return 'democrat';
-  return 'independent';
-}
-
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 // ─── Tooltip ─────────────────────────────────────────────────────────────────
+const tooltip = document.getElementById('tooltip');
+
 function showTooltip(event, text) {
-  tooltip.textContent = text;
-  tooltip.style.display = 'block';
-  tooltip.setAttribute('aria-hidden', 'false');
+  tooltip.textContent    = text;
+  tooltip.style.display  = 'block';
   moveTooltip(event);
 }
 
 function moveTooltip(event) {
-  const x = event.clientX + 14;
-  const y = event.clientY - 32;
+  const x    = event.clientX + 14;
+  const y    = event.clientY - 32;
   const maxX = window.innerWidth  - tooltip.offsetWidth  - 8;
   const maxY = window.innerHeight - tooltip.offsetHeight - 8;
   tooltip.style.left = Math.min(x, maxX) + 'px';
@@ -530,7 +266,20 @@ function moveTooltip(event) {
 
 function hideTooltip() {
   tooltip.style.display = 'none';
-  tooltip.setAttribute('aria-hidden', 'true');
+}
+
+map.on('mousemove', e => {
+  if (tooltip.style.display !== 'none') moveTooltip(e.originalEvent);
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function districtLabel(props) {
+  const fips  = String(props.STATE).padStart(2, '0');
+  const abbr  = FIPS_TO_STATE[fips] || fips;
+  const num   = parseInt(props.CD119, 10);
+  return num === 0
+    ? `${STATE_NAMES[abbr] || abbr} – At-Large`
+    : `${STATE_NAMES[abbr] || abbr} – District ${num}`;
 }
 
 // ─── Loading / Errors ─────────────────────────────────────────────────────────
@@ -540,19 +289,19 @@ function showLoading(visible) {
 
 function showError(msg) {
   const toast = document.createElement('div');
-  toast.className = 'toast';
+  toast.className   = 'toast';
   toast.textContent = msg;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 4500);
 }
 
 // ─── Event Listeners ──────────────────────────────────────────────────────────
-document.getElementById('back-btn').addEventListener('click', onBack);
 document.getElementById('search-btn').addEventListener('click', onSearch);
 document.getElementById('search-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') onSearch();
 });
-document.getElementById('panel-close').addEventListener('click', hidePanel);
+document.getElementById('panel-close').addEventListener('click', clearHighlight);
+document.getElementById('clear-btn').addEventListener('click', clearHighlight);
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
-init().catch(console.error);
+loadAllDistricts();
