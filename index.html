@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>No Cap Fund – Congressional District Map</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
 
-    <!-- Header / Search bar -->
     <header id="header">
       <div id="logo">
         <span class="logo-mark">●</span> No Cap Fund
@@ -22,45 +22,28 @@
           autocomplete="off"
           spellcheck="false"
         />
-        <button id="search-btn" aria-label="Find my district">Find My District</button>
+        <button id="search-btn">Find My District</button>
       </div>
-      <button id="back-btn" class="hidden" aria-label="Back to US map">← All States</button>
+      <button id="clear-btn" class="hidden">Clear Selection</button>
     </header>
 
-    <!-- Main map -->
-    <svg id="map" aria-label="US Congressional District Map"></svg>
+    <div id="map"></div>
 
-    <!-- Representative info panel -->
-    <aside id="panel" class="hidden" aria-label="Representative information">
-      <button id="panel-close" aria-label="Close panel">×</button>
+    <aside id="panel" class="hidden">
+      <button id="panel-close">×</button>
       <div id="panel-content"></div>
     </aside>
 
-    <!-- Legend -->
-    <div id="legend" aria-label="Map legend">
-      <div class="legend-item">
-        <span class="legend-swatch signed"></span>
-        <span>Signed No Cap Pledge</span>
-      </div>
-      <div class="legend-item">
-        <span class="legend-swatch unsigned"></span>
-        <span>Not Signed</span>
-      </div>
-    </div>
-
-    <!-- Loading spinner -->
-    <div id="loading" class="hidden" aria-live="polite" aria-busy="true">
+    <div id="loading" class="hidden">
       <div class="spinner"></div>
-      <span>Loading…</span>
+      <span>Loading districts…</span>
     </div>
 
-    <!-- Tooltip -->
-    <div id="tooltip" role="tooltip" aria-hidden="true"></div>
+    <div id="tooltip"></div>
 
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
