@@ -150,6 +150,8 @@ html, body {
   top: var(--header-height);
   right: 0;
   width: var(--panel-width);
+  height: calc(100vh - var(--header-height));
+  overflow-y: auto;
   background: var(--surface);
   border-left: 1px solid var(--border);
   z-index: 900;
@@ -212,6 +214,108 @@ html, body {
 
 .panel-congress {
   font-size: 12px;
+  color: var(--text-subtle);
+}
+
+/* ─── Representative Info ───────────────────────────────────────────────────── */
+.panel-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 16px 0;
+}
+
+.rep-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Reuses the same spin keyframe defined for #loading */
+.rep-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.rep-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.rep-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.party-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+
+.party-dem { background: rgba(31, 111, 235, 0.2); color: #79c0ff; }
+.party-rep { background: rgba(218, 54, 51, 0.2);  color: #f78166; }
+.party-ind { background: rgba(188, 140, 255, 0.2); color: #d2a8ff; }
+
+.pledge-badge {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.pledge-yes {
+  background: rgba(35, 134, 54, 0.2);
+  color: var(--green-bright);
+  border: 1px solid rgba(35, 134, 54, 0.4);
+}
+
+.pledge-no {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.rep-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.rep-contact {
+  font-size: 13px;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.rep-contact:hover { text-decoration: underline; }
+
+.rep-stance {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  border-left: 3px solid var(--gold);
+  padding-left: 10px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.rep-not-found {
+  font-size: 13px;
   color: var(--text-subtle);
 }
 
