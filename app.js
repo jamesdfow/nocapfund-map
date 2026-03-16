@@ -5,6 +5,20 @@ const TIGER_QUERY    = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIG
 const CENSUS_GEOCODE = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress';
 const NOMINATIM_URL  = 'https://nominatim.openstreetmap.org/search';
 
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+// Fill in your project values from: Supabase Dashboard → Project Settings → API
+//
+// SECURITY: The anon key is SAFE to commit and ship in client-side code.
+// Supabase's Row Level Security (RLS) policies — not key secrecy — control access.
+// The RLS policy in supabase/schema.sql allows public reads only.
+// Writes require the service_role key, which stays on your machine / Supabase dashboard.
+//
+// A Netlify serverless function is NOT needed here — RLS makes the anon key safe for reads.
+const SUPABASE_URL      = 'https://oeavmtxbieirbhzfycae.supabase.co';   // e.g. 'https://xxxx.supabase.co'
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9lYXZtdHhiaWVpcmJoemZ5Y2FlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2MzU1NTUsImV4cCI6MjA4OTIxMTU1NX0.EClO4QOZAHRDbXBg1gTo1Hi_3wj1G8CHPvlCAP7q7rk';      // starts with 'eyJ...'
+
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 // ─── Lookup Tables ────────────────────────────────────────────────────────────
 const FIPS_TO_STATE = {
   '01':'AL','02':'AK','04':'AZ','05':'AR','06':'CA','08':'CO','09':'CT',
@@ -166,7 +180,7 @@ function clearHighlight() {
 }
 
 // ─── Panel ────────────────────────────────────────────────────────────────────
-function showPanel(props) {
+async function showPanel(props) {
   const fips      = String(props.STATE).padStart(2, '0');
   const abbr      = FIPS_TO_STATE[fips] || fips;
   const stateName = STATE_NAMES[abbr]   || abbr;
@@ -174,13 +188,80 @@ function showPanel(props) {
   const shortCode = districtLabel(props);
   const distName  = distNum === 0 ? 'At-Large District' : `District ${distNum}`;
 
+  // Show static district info immediately; rep section shows a spinner.
   document.getElementById('panel-content').innerHTML = `
     <p class="panel-code">${shortCode}</p>
     <p class="panel-state">${stateName}</p>
     <h2 class="panel-district-name">${distName}</h2>
     <p class="panel-congress">119th Congress</p>
+    <div class="panel-divider"></div>
+    <div id="rep-section" class="rep-loading">
+      <div class="rep-spinner"></div>
+      <span>Loading representative…</span>
+    </div>
   `;
   document.getElementById('panel').classList.remove('hidden');
+
+  // Fetch rep from Supabase; bail gracefully if not configured.
+  const rep        = await fetchRepresentative(abbr, distNum);
+  const repSection = document.getElementById('rep-section');
+  if (!repSection) return; // panel was closed while fetching
+
+  if (!rep) {
+    repSection.className = '';
+    repSection.innerHTML = `<p class="rep-not-found">Representative data not yet available.</p>`;
+    return;
+  }
+
+  const partyClass  = rep.party === 'Democrat'   ? 'party-dem'
+                    : rep.party === 'Republican'  ? 'party-rep'
+                    : 'party-ind';
+  const pledgeHtml  = rep.no_cap_pledge
+    ? `<div class="pledge-badge pledge-yes">&#10003; Signed the No Cap Pledge</div>`
+    : `<div class="pledge-badge pledge-no">&#9675; Has Not Signed Pledge</div>`;
+  const phoneHtml   = rep.phone
+    ? `<a class="rep-contact" href="tel:${esc(rep.phone)}">${esc(rep.phone)}</a>`
+    : '';
+  const websiteHost = rep.website ? safeHostname(rep.website) : '';
+  const websiteHtml = websiteHost
+    ? `<a class="rep-contact" href="${esc(rep.website)}" target="_blank" rel="noopener noreferrer">${esc(websiteHost)}</a>`
+    : '';
+  const stanceHtml  = rep.stance_notes
+    ? `<blockquote class="rep-stance">${esc(rep.stance_notes)}</blockquote>`
+    : '';
+
+  repSection.className = '';
+  repSection.innerHTML = `
+    <div class="rep-header">
+      <span class="rep-name">${esc(rep.name)}</span>
+      <span class="party-badge ${partyClass}">${esc(rep.party.charAt(0))}</span>
+    </div>
+    ${pledgeHtml}
+    <div class="rep-links">
+      ${phoneHtml}
+      ${websiteHtml}
+    </div>
+    ${stanceHtml}
+  `;
+}
+
+// ─── Supabase Lookup ──────────────────────────────────────────────────────────
+async function fetchRepresentative(state, district) {
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient
+      .from('representatives')
+      .select('name, party, phone, website, no_cap_pledge, stance_notes')
+      .eq('state', state)
+      .eq('district', district)
+      .single();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    // PGRST116 = "no rows returned" — normal for districts with no data yet.
+    if (err.code !== 'PGRST116') console.warn('Supabase lookup failed:', err.message);
+    return null;
+  }
 }
 
 function hidePanel() {
@@ -284,6 +365,21 @@ function districtLabel(props) {
   return num === 0
     ? `${abbr}-AL`
     : `${abbr}-${String(num).padStart(2, '0')}`;
+}
+
+// Escape HTML entities to prevent XSS when inserting DB values into innerHTML.
+function esc(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Extract hostname safely; returns '' on invalid URLs.
+function safeHostname(url) {
+  try { return new URL(url).hostname; } catch { return ''; }
 }
 
 // ─── Loading / Errors ─────────────────────────────────────────────────────────
