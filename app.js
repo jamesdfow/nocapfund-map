@@ -403,5 +403,87 @@ document.getElementById('search-input').addEventListener('keydown', e => {
 document.getElementById('panel-close').addEventListener('click', clearHighlight);
 document.getElementById('clear-btn').addEventListener('click', clearHighlight);
 
+// ─── Embed Modal ─────────────────────────────────────────────────────────────
+(function () {
+  const overlay     = document.getElementById('embed-overlay');
+  const widthInput  = document.getElementById('embed-width');
+  const widthUnit   = document.getElementById('embed-width-unit');
+  const widthSlider = document.getElementById('embed-width-slider');
+  const heightInput = document.getElementById('embed-height');
+  const heightSlider= document.getElementById('embed-height-slider');
+  const codeArea    = document.getElementById('embed-code');
+  const copyBtn     = document.getElementById('embed-copy');
+
+  function embedUrl() {
+    // Use current page URL stripped of hash/search so it stays clean as an iframe src
+    return window.location.origin + window.location.pathname;
+  }
+
+  function buildCode() {
+    const w  = widthInput.value  || '800';
+    const wu = widthUnit.value   || 'px';
+    const h  = heightInput.value || '600';
+    return `<iframe\n  src="${embedUrl()}"\n  width="${w}${wu}"\n  height="${h}px"\n  style="border:0;border-radius:8px;"\n  title="No Cap Fund \u2013 Congressional District Map"\n  allowfullscreen\n></iframe>`;
+  }
+
+  function refresh() { codeArea.value = buildCode(); }
+
+  // Sync sliders → inputs
+  widthSlider.addEventListener('input',  () => { widthInput.value  = widthSlider.value;  refresh(); });
+  heightSlider.addEventListener('input', () => { heightInput.value = heightSlider.value; refresh(); });
+
+  // Sync inputs → sliders
+  widthInput.addEventListener('input',  () => { widthSlider.value  = Math.min(Math.max(widthInput.value,  300), 1400); refresh(); });
+  heightInput.addEventListener('input', () => { heightSlider.value = Math.min(Math.max(heightInput.value, 200), 900);  refresh(); });
+
+  widthUnit.addEventListener('change', () => {
+    // When switching to %, clamp sensible max
+    if (widthUnit.value === '%') {
+      widthInput.value  = Math.min(widthInput.value, 100);
+      widthSlider.value = widthInput.value;
+    }
+    refresh();
+  });
+
+  // Presets
+  document.querySelectorAll('.embed-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      widthInput.value  = btn.dataset.w;
+      widthUnit.value   = btn.dataset.wu;
+      heightInput.value = btn.dataset.h;
+      widthSlider.value = Math.min(btn.dataset.w, 1400);
+      heightSlider.value= Math.min(btn.dataset.h, 900);
+      refresh();
+    });
+  });
+
+  // Copy
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(codeArea.value).then(() => {
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('copied');
+      setTimeout(() => { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 2000);
+    });
+  });
+
+  // Open / Close
+  document.getElementById('embed-btn').addEventListener('click', () => {
+    refresh();
+    overlay.classList.remove('hidden');
+  });
+
+  function closeModal() { overlay.classList.add('hidden'); }
+
+  document.getElementById('embed-close').addEventListener('click', closeModal);
+
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) closeModal();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) closeModal();
+  });
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 loadAllDistricts();

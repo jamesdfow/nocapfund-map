@@ -25,7 +25,55 @@
         <button id="search-btn">Find My District</button>
       </div>
       <button id="clear-btn" class="hidden">Clear Selection</button>
+      <button id="embed-btn" title="Get embed code">&#60;/&#62; Embed</button>
     </header>
+
+    <!-- Embed Modal -->
+    <div id="embed-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="embed-title">
+      <div id="embed-modal">
+        <div id="embed-modal-header">
+          <h2 id="embed-title">Embed this map</h2>
+          <button id="embed-close" aria-label="Close">×</button>
+        </div>
+
+        <p class="embed-desc">Copy the code below and paste it into any webpage to embed the interactive map.</p>
+
+        <div class="embed-controls">
+          <div class="embed-field">
+            <label for="embed-width">Width</label>
+            <div class="embed-input-row">
+              <input type="number" id="embed-width" value="800" min="300" max="2000" step="10" />
+              <select id="embed-width-unit">
+                <option value="px">px</option>
+                <option value="%">%</option>
+              </select>
+            </div>
+            <input type="range" id="embed-width-slider" min="300" max="1400" value="800" step="10" />
+          </div>
+          <div class="embed-field">
+            <label for="embed-height">Height</label>
+            <div class="embed-input-row">
+              <input type="number" id="embed-height" value="600" min="200" max="1200" step="10" />
+              <span class="embed-unit-label">px</span>
+            </div>
+            <input type="range" id="embed-height-slider" min="200" max="900" value="600" step="10" />
+          </div>
+        </div>
+
+        <div class="embed-presets">
+          <span class="embed-presets-label">Presets:</span>
+          <button class="embed-preset" data-w="100" data-wu="%" data-h="500">Full width</button>
+          <button class="embed-preset" data-w="800" data-wu="px" data-h="600">Medium</button>
+          <button class="embed-preset" data-w="500" data-wu="px" data-h="400">Small</button>
+          <button class="embed-preset" data-w="1100" data-wu="px" data-h="700">Large</button>
+        </div>
+
+        <div class="embed-code-wrap">
+          <textarea id="embed-code" readonly rows="5" spellcheck="false"></textarea>
+          <button id="embed-copy">Copy</button>
+        </div>
+      </div>
+    </div>
 
     <div id="map"></div>
 
